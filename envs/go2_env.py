@@ -1,7 +1,8 @@
-"""Genesis-based Go2 quadruped env for rsl_rl PPO."""
+"""Genesis-based Go2 quadruped env for rsl_rl PPO (5.x VecEnv contract)."""
 import math
 import torch
 import genesis as gs
+from tensordict import TensorDict
 
 
 class Go2Env:
@@ -13,6 +14,9 @@ class Go2Env:
         self.num_actions = env_cfg["num_actions"]
         self.num_commands = command_cfg["num_commands"]
         self.device = torch.device(device)
+
+        # rsl_rl VecEnv requires env.cfg
+        self.cfg = env_cfg
 
         self.env_cfg = env_cfg
         self.obs_cfg = obs_cfg
@@ -34,7 +38,7 @@ class Go2Env:
                 camera_lookat=(0.0, 0.0, 0.5),
                 camera_fov=40,
             ),
-            vis_options=gs.options.VisOptions(n_rendered_envs=1),
+            vis_options=gs.options.VisOptions(rendered_envs_idx=[0]),
             rigid_options=gs.options.RigidOptions(
                 dt=self.dt,
                 constraint_solver=gs.constraint_solver.Newton,
@@ -58,7 +62,7 @@ class Go2Env:
         )
         self.scene.build(n_envs=num_envs)
 
-        self.motor_dofs = [self.robot.get_joint(n).dof_idx_local for n in env_cfg["dof_names"]]
+        self.motor_dofs = [self.robot.get_joint(n).dofs_idx_local[0] for n in env_cfg["dof_names"]]
         self.robot.set_dofs_kp([env_cfg["kp"]] * self.num_actions, self.motor_dofs)
         self.robot.set_dofs_kv([env_cfg["kd"]] * self.num_actions, self.motor_dofs)
 
@@ -84,12 +88,15 @@ class Go2Env:
         self.global_gravity = torch.tensor([0.0, 0.0, -1.0], device=self.device).repeat(num_envs, 1)
         self.base_pos = torch.zeros((num_envs, 3), device=self.device)
         self.base_quat = torch.zeros((num_envs, 4), device=self.device)
-        self.extras = {"observations": {}}
+        self.extras = {}
+
+        # Reset everything so the very first get_observations() is valid
+        self.reset()
 
     # ---------- rsl_rl VecEnv contract ----------
 
-    def get_observations(self):
-        return self.obs_buf, self.extras
+    def get_observations(self) -> TensorDict:
+        return self._obs_tensordict()
 
     def get_privileged_observations(self):
         return None
@@ -98,7 +105,7 @@ class Go2Env:
         self.reset_buf[:] = 1
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
         self._compute_observations()
-        return self.obs_buf, self.extras
+        return self._obs_tensordict()
 
     def step(self, actions):
         self.actions = torch.clip(actions, -self.env_cfg["clip_actions"], self.env_cfg["clip_actions"])
@@ -112,14 +119,12 @@ class Go2Env:
         self.episode_length_buf += 1
         self._refresh_robot_state()
 
-        # Resample commands periodically
         resample_period = int(self.command_cfg["resampling_time_s"] / self.dt)
         time_to_resample = (self.episode_length_buf % resample_period == 0)
         resample_idx = time_to_resample.nonzero(as_tuple=False).flatten()
         if resample_idx.numel() > 0:
             self._resample_commands(resample_idx)
 
-        # Terminations
         roll = self._compute_roll(self.base_quat)
         pitch = self._compute_pitch(self.base_quat)
         flip = (roll.abs() > self.env_cfg["termination_if_roll_greater_than"]) | \
@@ -127,26 +132,30 @@ class Go2Env:
         timeout = self.episode_length_buf >= self.max_episode_length
         self.reset_buf = (flip | timeout).to(torch.int32)
 
-        # Rewards
         self._compute_rewards()
 
-        # Reset terminated envs
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
         self.reset_idx(env_ids)
 
-        # Update obs + bookkeeping
         self._compute_observations()
         self.last_actions[:] = self.actions[:]
         self.last_dof_vel[:] = self.dof_vel[:]
 
-        return self.obs_buf, self.rew_buf, self.reset_buf.to(torch.float32), self.extras
+        return (
+            self._obs_tensordict(),
+            self.rew_buf,
+            self.reset_buf.to(torch.float32),
+            self.extras,
+        )
 
     # ---------- internals ----------
+
+    def _obs_tensordict(self) -> TensorDict:
+        return TensorDict({"policy": self.obs_buf}, batch_size=[self.num_envs])
 
     def reset_idx(self, envs_idx):
         if envs_idx is None or len(envs_idx) == 0:
             return
-        # DoFs
         self.dof_pos[envs_idx] = self.default_dof_pos
         self.dof_vel[envs_idx] = 0.0
         self.robot.set_dofs_position(
@@ -155,7 +164,6 @@ class Go2Env:
             zero_velocity=True,
             envs_idx=envs_idx,
         )
-        # Base pose
         self.base_pos[envs_idx] = self.base_init_pos
         self.base_quat[envs_idx] = self.base_init_quat.reshape(1, -1)
         self.robot.set_pos(self.base_pos[envs_idx], zero_velocity=False, envs_idx=envs_idx)
@@ -164,7 +172,6 @@ class Go2Env:
         self.base_ang_vel[envs_idx] = 0.0
         self.robot.zero_all_dofs_velocity(envs_idx)
 
-        # Buffers
         self.last_actions[envs_idx] = 0.0
         self.last_dof_vel[envs_idx] = 0.0
         self.episode_length_buf[envs_idx] = 0

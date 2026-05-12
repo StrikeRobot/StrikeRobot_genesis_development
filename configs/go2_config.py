@@ -1,4 +1,4 @@
-"""Config factory for Go2 velocity-tracking PPO training."""
+"""Config factory for Go2 velocity-tracking PPO training (rsl_rl 5.x schema)."""
 
 
 def get_cfgs():
@@ -64,7 +64,7 @@ def get_cfgs():
 def get_train_cfg(exp_name: str, max_iterations: int) -> dict:
     return {
         "algorithm": {
-            "class_name": "PPO",
+            "class_name": "rsl_rl.algorithms.PPO",
             "clip_param": 0.2,
             "desired_kl": 0.01,
             "entropy_coef": 0.01,
@@ -77,29 +77,36 @@ def get_train_cfg(exp_name: str, max_iterations: int) -> dict:
             "schedule": "adaptive",
             "use_clipped_value_loss": True,
             "value_loss_coef": 1.0,
+            "normalize_advantage_per_mini_batch": False,
+            "rnd_cfg": None,
+            "symmetry_cfg": None,
         },
-        "policy": {
-            "class_name": "ActorCritic",
+        "actor": {
+            "class_name": "rsl_rl.models.MLPModel",
+            "hidden_dims": [512, 256, 128],
             "activation": "elu",
-            "actor_hidden_dims": [512, 256, 128],
-            "critic_hidden_dims": [512, 256, 128],
-            "init_noise_std": 1.0,
+            "obs_normalization": False,
+            "distribution_cfg": {
+                "class_name": "rsl_rl.modules.distribution.GaussianDistribution",
+                "init_std": 1.0,
+                "std_type": "scalar",
+                "learn_std": True,
+            },
         },
-        "runner": {
-            "checkpoint": -1,
-            "experiment_name": exp_name,
-            "load_run": -1,
-            "log_interval": 1,
-            "max_iterations": max_iterations,
-            "record_interval": -1,
-            "resume": False,
-            "resume_path": None,
-            "run_name": "",
-            "save_interval": 50,
+        "critic": {
+            "class_name": "rsl_rl.models.MLPModel",
+            "hidden_dims": [512, 256, 128],
+            "activation": "elu",
+            "obs_normalization": False,
         },
-        "runner_class_name": "OnPolicyRunner",
+        "obs_groups": {
+            "actor": ["policy"],
+            "critic": ["policy"],
+        },
         "num_steps_per_env": 24,
         "save_interval": 50,
-        "empirical_normalization": None,
+        "experiment_name": exp_name,
+        "run_name": "",
         "seed": 1,
+        "max_iterations": max_iterations,
     }

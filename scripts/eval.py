@@ -60,7 +60,7 @@ def main():
     runner.load(resolve_checkpoint(log_dir, args.ckpt))
     policy = runner.get_inference_policy(device="cuda:0")
 
-    obs, _ = env.reset()
+    obs = env.reset()
     step = 0
     with torch.no_grad():
         while args.max_steps == 0 or step < args.max_steps:
