@@ -1,0 +1,5 @@
+genesis-world>=0.2.1
+rsl-rl-lib>=2.0.0
+tensorboard>=2.15
+numpy
+pytest>=7.0
